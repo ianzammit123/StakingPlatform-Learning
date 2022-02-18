@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+        <meta name="description" content="" />
+        <meta name="author" content="" />
+        <title>Staking Pool Demo - Learning Project</title>
+        <!-- Favicon-->
+        <link rel="icon" type="image/x-icon" href="./assets/favicon.ico" />
+        <!-- Core theme CSS (includes Bootstrap)-->
+        <link href="./css/styles.css" rel="stylesheet" />
+    </head>
+
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js" integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script>
+
+    <script src="https://cdn.ethers.io/lib/ethers-5.2.umd.min.js" type="application/javascript"></script>
+    <script src="js/staking_pool_abi.js"></script>
+    <script src="js/pool_token_abi.js"></script>
+    <script>
+        
+       const contractAddress = "0xb8E15d4C505B4Ae73cD3503e147B6Ce3Bd941c61";
+       const pool_token_address = "0xc6867356d35a0175547D2839DF0B585F270D149B";
+   
+       
+        let defaultAccount = "";
+        const setDefaultAccount = (address) => {
+            defaultAccount = address;
+        }
+
+        let connButtonText = "Connect";
+        const setConnButtonText = () => {
+            $('#connect_button').text("Connected!");
+        }
+
+        let errorMessage = "";
+        const setErrorMessage = () => {
+
+        }
+
+
+        let provider = null;
+        const setProvider = (provider) => {
+            provider = provider;
+        }
+
+        let signer = null;
+        const setSigner = (signer) => {
+            signer = signer;
+        }
+
+        let contract = null;
+        const setContract = (setContract) => {
+            contract = setContract;
+        }
+
+        let tokenContract = null;
+        const setTokenContract = (setContract) => {
+            tokenContract = setContract;
+        }
+
+        let userTokenBalance = 0;
+        const setUserTokenBalance = (tokenBalance) => {
+            userTokenBalance = tokenBalance;
+            $('#max_tokens').text(tokenBalance);
+            $('#stake_amount').attr('placeholder', "Max: " + tokenBalance);
+
+            if(tokenBalance > 0){
+                $('#max_supply').show();
+            }
+        }
+
+        let totalTokensClaimed = null;
+        const setTotalTokensClaimed = (totalTokens) => {
+    
+            if(totalTokens == ""){
+                totalTokens = 0;
+            }
+            $('#tokens_claimed').text(totalTokens);
+        }
+
+
+        function connectWalletHandler() {
+            if (window.ethereum && window.ethereum.isMetaMask) {
+
+                window.ethereum.request({ method: 'eth_requestAccounts'})
+                .then(result => {
+                    accountChangedHandler(result[0]);
+                    setConnButtonText(result[0]);
+                })
+                .catch(error => {
+                    setErrorMessage(error.message);             
+                });
+
+            } else {
+                console.log('Need to install MetaMask');
+                setErrorMessage('Please install MetaMask browser extension to interact');
+            }
+        }
+
+        // update account, will cause component re-render
+        const accountChangedHandler = async (newAccount) => {
+            await setDefaultAccount(newAccount);
+            await updateEthers();
+        }
+
+        const chainChangedHandler = () => {
+            // reload the page to avoid any errors with chain change mid use of application
+            window.location.reload();
+        }
+
+
+        // listen for account changes
+        window.ethereum.on('accountsChanged', accountChangedHandler);
+        window.ethereum.on('chainChanged', chainChangedHandler);
+
+        const updateEthers = () => {
+
+            const provider = new ethers.providers.Web3Provider(window.ethereum);
+
+            const signer = provider.getSigner();
+            setSigner(signer);
+
+            let tempContract = new ethers.Contract(contractAddress, stakingFarm_abi, signer);
+            setContract(tempContract);
+
+
+            let tempTokenContract = new ethers.Contract(pool_token_address, pool_token_abi, signer);
+            setTokenContract(tempTokenContract);
+
+            getStackedPoolTokens();
+            getUsersTokenBalance();
+            getTotalTokensClaimed();
+
+            // Show the main content of the application
+            $('#app_container').show();
+        }
+
+
+    //async function stake_tokens() {
+    async function stake_tokens(){
+
+
+        // Get the token address from the dropdown
+        const to_stake_token_address = $('#stake_token option:selected').val();
+        const amount_to_stake = ethers.utils.parseEther($('#stake_amount').val());
+
+        // Check that the amount to stake isn't more than they have avilable
+        if(parseInt($('#stake_amount').val()) > userTokenBalance){
+
+            alert("You cant stake more than your available balance.");
+            return false;
+        }
+
+        const lock_period = $('#amount').val();
+
+        const approve_tx = await tokenContract.approve(contractAddress,amount_to_stake).then((result) => {
+
+            const tx_hash = result.hash;
+            update_staking_ui("approving", "");
+            confirmTransaction(result,amount_to_stake,to_stake_token_address, lock_period);
+        });
+    }
+
+
+    async function unstake_tokens(){
+        const to_stake_token_address = $('#stake_token option:selected').val();
+        const unstake_tx = await contract.unStake(to_stake_token_address).then((result) => {
+            checkEvents();
+            update_staking_ui("unstake_start");
+        });
+    }
+
+    async function claim_rewards(){
+        const claim = await contract.claimRewards(pool_token_address, 0, false, defaultAccount).then((result) => {
+            checkEvents();
+            update_staking_ui("claim_start");
+        });
+    }
+
+
+    const confirmTransaction = async (result,amount_to_stake,to_stake_token_address, lock_period) => {
+
+        let receipt = null;
+        const provider = new ethers.providers.Web3Provider(window.ethereum);
+
+        while (receipt === null) {
+          try {
+            //console.log("PROVIDER: " + provider)
+            receipt = await provider.getTransactionReceipt(result.hash);
+
+            if (receipt === null) {
+              continue;
+            }
+
+            //console.log(`Receipt confirmations:`, receipt.confirmations);
+
+            depoistFunds(amount_to_stake,to_stake_token_address,result.hash, lock_period);
+            checkEvents();
+            break;
+           
+          } catch (e) {
+            console.log(`Receipt error:`, e);
+            break;
+          }
+        }
+
+
+    }
+
+    const getStackedPoolTokens = async () => {
+        const pool_balance = await contract.stakingBalance(pool_token_address, defaultAccount).then((result) => {
+                $('#pool_tokens').text(ethers.utils.formatEther(result));
+        });
+    }
+
+
+    const depoistFunds = async (amount_to_stake,to_stake_token_address, txhash,lock_period) => {
+        var deposit = await contract.stakeFunds(amount_to_stake, to_stake_token_address,lock_period);
+        checkEvents(txhash);
+    }
+
+
+
+    const checkEvents = async (txhash) => {
+        contract.on("fundsStaked", (token, _amount) => {
+            update_staking_ui("approved",txhash);
+            getStackedPoolTokens();
+            getUsersTokenBalance();
+            getTotalTokensClaimed();
+        });
+
+       contract.on("fundsUnstaked", (token) => {
+            update_staking_ui("success_unstake",txhash);
+            getStackedPoolTokens();
+            getUsersTokenBalance();
+            getTotalTokensClaimed();
+        });
+
+       contract.on("rewardsClaimed", (token) => {
+            update_staking_ui("claim_finish",txhash);
+            getStackedPoolTokens();
+            getUsersTokenBalance();
+            getTotalTokensClaimed();
+        });
+    }
+
+    const update_staking_ui = (status, txhash) => {
+
+        $('#finished_staking').hide();
+        $('#finished_unstaking').hide();
+
+        if(status == "approving")
+        {
+            $('#stake_btn').attr("disabled", true);
+            $('#stake_btn').val("Approving your transaction");
+            $('#starting_staking').show();
+
+        }else if(status == "approved"){
+            $('#stake_btn').attr("disabled", false);
+            $('#stake_btn').val("Stake Tokens");
+
+            $('#starting_staking').hide();
+
+            $('#finished_staking').text("You've successfully staked your funds. \nTransaction hash: " + txhash);
+            $('#finished_staking').show();
+
+        }else if(status == "unstake_start"){
+            $('#unstake_btn').attr("disabled", true);
+            $('#unstake_btn').val("Approving your transaction");
+            $('#starting_unstaking').show();
+
+        }else if(status == "success_unstake"){
+            $('#unstake_btn').attr("disabled", false);
+            $('#unstake_btn').val("Stake Tokens");
+
+            $('#starting_unstaking').hide();
+            $('#finished_unstaking').text("You've successfully unstaked your funds, please check your wallet to confirm.");
+            $('#finished_unstaking').show();
+        }else if(status == "claim_start"){
+            $('#unstake_btn').attr("disabled", true);
+            $('#starting_claim').show();
+
+        }else if(status == "claim_finish"){
+            $('#unstake_btn').attr("disabled", false);
+            $('#starting_claim').hide();
+            $('#finished_claiming').text("You've successfully claimed your rewards, please check your wallet to confirm.");
+            $('#finished_claiming').show();
+        }
+
+
+    }
+
+    const getUsersTokenBalance = async () => {
+
+        let walletBalance = await tokenContract.balanceOf(defaultAccount).then((result) => {
+            let currentBalance = result.toString();
+            setUserTokenBalance(currentBalance.slice(0,-18));
+        });
+    }
+
+
+    const update_pool_address = () => {
+        $('#stake_token option:eq(1), #unstake_token option:eq(1)').val(pool_token_address);
+    }
+
+    const addMaxSupply = () => {
+        $('#stake_amount').val(userTokenBalance);
+    }
+
+    const getTotalTokensClaimed = async () => {
+        const totalBalance = await contract.totalClaimed(pool_token_address, defaultAccount).then((result) => {
+            console.log(ethers.utils.formatEther(result));
+
+            let tokenCount = result.toString();
+            setTotalTokensClaimed(tokenCount.slice(0,-18));
+        });
+    }
+    
+
+    </script>
+
+
+    <body onload="update_pool_address();" style="background-color:#1572A1;">
+
+
+        <!-- Responsive navbar-->
+        <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+            <div class="container px-5">
+                <a class="navbar-brand" href="#!">Staking Pool Demo</a>
+                <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarSupportedContent" aria-controls="navbarSupportedContent" aria-expanded="false" aria-label="Toggle navigation"><span class="navbar-toggler-icon"></span></button>
+                <div class="collapse navbar-collapse" id="navbarSupportedContent">
+                    <ul class="navbar-nav ms-auto mb-2 mb-lg-0">
+                        <li class="nav-item"><a class="nav-link active" aria-current="page" href="#!">&nbsp;</a></li>
+                        <li class="nav-item"><a class="nav-link" href="#!">&nbsp;</a></li>
+                        <li class="nav-item"><a class="nav-link" href="#!">&nbsp;</a></li>
+                        <li class="nav-item">
+                        	<button type="button" onClick="connectWalletHandler();" id="connect_button" class="btn-warning btn">Connect</button>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </nav>
+        <!-- Page Content-->
+        <div class="container">
+           <div class="row">
+                <div class="w-70 mx-auto" style="padding:30px; background-color: #fff;border-radius: 4px;margin-top: 50px;">
+                  <h3>Staking Pool</h3>
+                  <p><i><b>Deposit POOL tokens to earn POOL & BUSD rewards</b></i></p>
+                  <p>
+                    <i>* For flexible staking (no lockout period) leave lockup time at 0, flexible staking is subject to a 2% token fee when unstaking.</i><br>
+                    <i>* The staking rewards are based on a 24hr period per 100 tokens staked (subject to change)</i>
+                  </p>
+                  <hr>
+
+                  <p>
+                    <h4>Reward Rates</h4>
+                    <i>0-7 days</i> - <b>25 POOL</b> tokens per <b>24 hrs staked</b> <br>
+                    <i>14-21 days</i> - <b>100 POOL</b> tokens per <b>24 hrs staked</b> <br>
+                    <i>28+ days</i> - <b>200 POOL</b> tokens per <b>24 hrs staked</b> <br>
+                </p>
+
+                <hr>
+                    <div id="app_container" style="display: none;">
+                     <p>
+                        Pool Tokens Staked: <b><span id="pool_tokens">0</span></b><br />
+                        Tokens Claimed: <b><span id="tokens_claimed">0</span></b>
+                    </p>
+                     <div id="tabs">
+                          <ul>
+                            <li><a href="#tabs-1">Stake Tokens</a></li>
+                            <li><a href="#tabs-2">Unstake Tokens</a></li>
+                            <li><a href="#tabs-3">Claim Rewards</a></li>
+                          </ul>
+                          <div id="tabs-1">
+                                
+                                <div class="alert alert-warning" style="display: none;" id="starting_staking">Please wait while we approve your transaction.</div>
+                                <div class="alert alert-success" style="display: none;overflow-wrap:break-word;" id="finished_staking"></div>
+
+
+                                <div class="form-group">
+                                    <label for="stake_token">Token To Stake</label>
+                                    <select name="stake_token" id="stake_token" class="form-control">
+                                        <option value="">-- Select Token--</option>
+                                        <option value="" selected>POOL</option>
+                                    </select>
+                                </div> <br>
+
+                                <div class="form-group">
+                                    <label for="stake_amount">Amount:</label>
+                                    <input type="number" name="stake_amount" id="stake_amount" class="form-control" value="" placeholder="">
+                                    <p style="padding-top: 4px;"><i>Available Tokens: <b><span id="max_tokens">* Connect Wallet *</span></b>
+                                    <a href="#" id="max_supply" onclick="addMaxSupply();return false;" style="display: none;"> Max</a>
+                                    </p>
+                                    
+                                </div> <br>
+
+
+                                <div class="form-group">
+                                    <p>
+                                      <label for="amount">Token Lockup Period:</label>
+                                      <input type="text" id="amount" readonly style="border:0; color:#f6931f; font-weight:bold;">
+                                    </p>
+                                     
+                                    <div id="slider"></div> <br>
+                                </div>  
+
+                                <div class="form-group">
+                                    <input type="submit" class="btn btn-primary" id="stake_btn" onclick="stake_tokens();" value="Stake Tokens">
+                                </div>
+
+                          </div>
+
+                          <div id="tabs-2">
+                                
+                                <div class="alert alert-warning" style="display: none;" id="starting_unstaking">Please wait while we process your transaction.</div>
+                                <div class="alert alert-success" style="display: none;overflow-wrap:break-word;" id="finished_unstaking"></div>
+
+
+                                <div class="form-group">
+                                    <label for="unstake_token">Token To Unstake</label>
+                                    <select name="unstake_token" id="unstake_token" class="form-control">
+                                        <option value="">-- Select Token--</option>
+                                        <option value="" selected>POOL</option>
+                                    </select>
+                                </div> <br>
+
+                                <p><i>* Unstaking will automatically process any pending rewards</i></p>
+                                <div class="form-group">
+                                    <input type="submit" class="btn btn-primary" id="untake_btn" onclick="unstake_tokens();" value="Unstake">
+                                </div>
+                                
+                          </div>
+
+                          <div id="tabs-3">
+                                <br>
+                                <div class="alert alert-warning" style="display: none;" id="starting_claim">Please wait while we process your transaction.</div>
+                                <div class="alert alert-success" style="display: none;overflow-wrap:break-word;" id="finished_claiming"></div>
+
+                                <h5>Claim Your Rewards</h5>
+                                <button class="btn btn-primary" type="button" onclick="claim_rewards();">Claim</button>
+                          </div>
+
+                        </div>
+                     </div>
+                </div>
+            </div>
+        </div>
+
+
+        </div>
+        <!-- Footer-->
+        <footer id="footer" class="py-5 bg-dark">
+            <div class="container px-4 px-lg-5"><p class="m-0 text-center text-white">Copyright &copy; Staking Pool Demo</p></div>
+        </footer>
+        <!-- Bootstrap core JS-->
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+        <!-- Core theme JS-->
+        <script src="./js/scripts.js"></script>
+
+         <link rel="stylesheet" href="//code.jquery.com/ui/1.13.1/themes/base/jquery-ui.css">
+         <link rel="stylesheet" href="/resources/demos/style.css">
+          <script src="https://code.jquery.com/ui/1.13.1/jquery-ui.js"></script>
+    </body>
+</html>
+
+<script>
+  $( function() {
+    $( "#tabs" ).tabs();
+  } );
+  </script>
+
+
+<script>
+  $( function() {
+    $( "#slider" ).slider({
+      value:0,
+      min: 0,
+      max: 35,
+      step: 7,
+      slide: function( event, ui ) {
+        $( "#amount" ).val( ui.value );
+      }
+    });
+    $( "#amount" ).val($( "#slider" ).slider( "value" ) );
+  } );
+  </script>
